@@ -1,0 +1,25 @@
+{
+  "name": "openclaw-tts-cli",
+  "version": "1.0.0",
+  "description": "Local CLI TTS plugin for OpenClaw — use any command-line TTS tool as a speech provider",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/solar2ain/openclaw-tts-cli"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    },
+    "build": {
+      "openclawVersion": "2026.4.4",
+      "pluginSdkVersion": "2026.4.4"
+    }
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.24-beta.2"
+  }
+}
