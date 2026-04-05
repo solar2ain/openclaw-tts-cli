@@ -1,17 +1,71 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { runFfmpeg } from "openclaw/plugin-sdk/media-runtime";
-import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/sandbox";
-import type {
-  SpeechProviderConfig,
-  SpeechProviderPlugin,
-  SpeechSynthesisRequest,
-  SpeechTelephonySynthesisRequest,
-} from "openclaw/plugin-sdk/speech-core";
+import { promisify } from "node:util";
 
-const log = createSubsystemLogger("tts-local-cli");
+const execFileAsync = promisify(execFile);
+
+// --- SDK dynamic imports with fallback for older OpenClaw versions ---
+
+type LogFn = (msg: string, ...args: unknown[]) => void;
+
+const log: { debug: LogFn; warn: LogFn; error: LogFn } = {
+  debug: (...args) => console.log("[tts-local-cli]", ...args),
+  warn: (...args) => console.warn("[tts-local-cli]", ...args),
+  error: (...args) => console.error("[tts-local-cli]", ...args),
+};
+
+let _sdkResolved = false;
+let _ffmpegRunner: ((args: string[]) => Promise<void>) | undefined;
+let _preferredTmpDir: (() => string) | undefined;
+
+async function resolveSDK(): Promise<void> {
+  if (_sdkResolved) return;
+  _sdkResolved = true;
+  try {
+    const { createSubsystemLogger } = await import("openclaw/plugin-sdk/runtime-env");
+    const sdkLog = createSubsystemLogger("tts-local-cli");
+    log.debug = sdkLog.debug;
+    log.warn = sdkLog.warn;
+    log.error = sdkLog.error;
+  } catch {}
+  try {
+    const { runFfmpeg } = await import("openclaw/plugin-sdk/media-runtime");
+    _ffmpegRunner = runFfmpeg;
+  } catch {}
+  try {
+    const { resolvePreferredOpenClawTmpDir } = await import("openclaw/plugin-sdk/sandbox");
+    _preferredTmpDir = resolvePreferredOpenClawTmpDir;
+  } catch {}
+}
+
+async function ffmpegRunner(args: string[]): Promise<void> {
+  await resolveSDK();
+  if (_ffmpegRunner) return _ffmpegRunner(args);
+  await execFileAsync("ffmpeg", args, { timeout: 60_000, maxBuffer: 50 * 1024 * 1024 });
+}
+
+function getTmpDir(): string {
+  return _preferredTmpDir ? _preferredTmpDir() : os.tmpdir();
+}
+
+// --- Types (no runtime dependency) ---
+
+type SpeechProviderConfig = Record<string, unknown>;
+
+type SpeechProviderPlugin = {
+  id: string;
+  aliases?: string[];
+  label: string;
+  autoSelectOrder?: number;
+  resolveConfig?: (ctx: any) => SpeechProviderConfig;
+  isConfigured: (ctx: any) => boolean;
+  synthesize: (req: any) => Promise<any>;
+  synthesizeTelephony?: (req: any) => Promise<any>;
+};
+
+// --- Config helpers ---
 
 const VALID_OUTPUT_FORMATS = ["mp3", "opus", "wav"] as const;
 type OutputFormat = (typeof VALID_OUTPUT_FORMATS)[number];
@@ -58,9 +112,24 @@ function normalizeOutputFormat(value: unknown): OutputFormat {
   return "mp3";
 }
 
-function resolveCliProviderConfig(rawConfig: Record<string, unknown>): SpeechProviderConfig {
+function resolvePluginEntryConfig(
+  cfg: Record<string, unknown> | undefined,
+): SpeechProviderConfig | undefined {
+  const plugins = asObject(cfg?.plugins);
+  const entries = asObject(plugins?.entries);
+  const entry = asObject(entries?.["tts-local-cli"]);
+  return asObject(entry?.config) ?? undefined;
+}
+
+function resolveCliProviderConfig(
+  rawConfig: Record<string, unknown>,
+  cfg?: Record<string, unknown>,
+): SpeechProviderConfig {
   const providers = asObject(rawConfig.providers);
-  return asObject(providers?.cli) ?? asObject(providers?.["tts-local-cli"]) ?? {};
+  const fromProviders = asObject(providers?.cli) ?? asObject(providers?.["tts-local-cli"]);
+  if (fromProviders) return fromProviders;
+  // Fallback: plugin config (plugins.entries.tts-local-cli.config)
+  return resolvePluginEntryConfig(cfg) ?? {};
 }
 
 function getConfig(cfg: SpeechProviderConfig): CliConfig | null {
@@ -76,6 +145,8 @@ function getConfig(cfg: SpeechProviderConfig): CliConfig | null {
   };
 }
 
+// --- Text / template helpers ---
+
 function stripEmojis(text: string): string {
   return text
     .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, " ")
@@ -84,10 +155,16 @@ function stripEmojis(text: string): string {
 }
 
 function applyTemplate(str: string, ctx: Record<string, string | undefined>): string {
-  return str.replace(/{{\s*(\w+)\s*}}/gi, (_, key) => {
-    const normalizedKey = key.charAt(0).toUpperCase() + key.slice(1).toLowerCase();
-    return ctx[normalizedKey] ?? ctx[key] ?? "";
-  });
+  // Support both {{Text}} (double-brace) and {text} (single-brace) placeholders
+  return str
+    .replace(/{{\s*(\w+)\s*}}/gi, (_match, key) => {
+      const normalizedKey = key.charAt(0).toUpperCase() + key.slice(1).toLowerCase();
+      return ctx[normalizedKey] ?? ctx[key] ?? "";
+    })
+    .replace(/(?<!\{)\{(\w+)\}(?!\})/gi, (_match, key) => {
+      const normalizedKey = key.charAt(0).toUpperCase() + key.slice(1).toLowerCase();
+      return ctx[normalizedKey] ?? ctx[key] ?? "";
+    });
 }
 
 function parseCommand(cmdStr: string): { cmd: string; initialArgs: string[] } {
@@ -115,6 +192,8 @@ function parseCommand(cmdStr: string): { cmd: string; initialArgs: string[] } {
   if (current) parts.push(current);
   return { cmd: parts[0] || "", initialArgs: parts.slice(1) };
 }
+
+// --- Audio helpers ---
 
 function findAudioFile(dir: string, baseName: string): string | null {
   const files = readdirSync(dir);
@@ -146,6 +225,8 @@ function getFileExt(format: string): string {
   return ".mp3";
 }
 
+// --- CLI runner ---
+
 async function runCli(params: {
   command: string;
   args: string[];
@@ -166,6 +247,7 @@ async function runCli(params: {
     OutputPath: path.join(params.outputDir, `${params.filePrefix}${outputExt}`),
     OutputDir: params.outputDir,
     OutputBase: params.filePrefix,
+    Fileprefix: params.filePrefix,
   };
 
   const { cmd, initialArgs } = parseCommand(params.command);
@@ -179,7 +261,6 @@ async function runCli(params: {
     const timer = setTimeout(() => {
       timedOut = true;
       proc.kill();
-      // Escalate to SIGKILL if child ignores SIGTERM
       setTimeout(() => proc.kill("SIGKILL"), 5000).unref();
     }, params.timeoutMs);
 
@@ -222,19 +303,20 @@ async function runCli(params: {
 
       const stdout = Buffer.concat(stdoutChunks);
       if (stdout.length > 0) {
-        // Assume WAV for stdout output; could be MP3 but caller should convert if needed
         return resolve({ buffer: stdout, actualFormat: "wav" });
       }
       reject(new Error("CLI TTS produced no output"));
     });
 
-    if (!baseArgs.some((a) => /{{\s*text\s*}}/i.test(a))) {
-      proc.stdin?.on("error", () => {}); // suppress EPIPE if child ignores stdin
+    if (!baseArgs.some((a) => /{{\s*text\s*}}/i.test(a) || /(?<!\{)\{text\}(?!\})/i.test(a))) {
+      proc.stdin?.on("error", () => {});
       proc.stdin?.write(cleanText);
       proc.stdin?.end();
     }
   });
 }
+
+// --- Audio conversion ---
 
 async function convertAudio(
   inputPath: string,
@@ -246,29 +328,21 @@ async function convertAudio(
   if (target === "opus") args.push("-c:a", "libopus", "-b:a", "64k", outputPath);
   else if (target === "wav") args.push("-c:a", "pcm_s16le", outputPath);
   else args.push("-c:a", "libmp3lame", "-b:a", "128k", outputPath);
-  await runFfmpeg(args);
+  await ffmpegRunner(args);
   return readFileSync(outputPath);
 }
 
 async function convertToRawPcm(inputPath: string, outputDir: string): Promise<Buffer> {
-  // Output raw 16kHz mono 16-bit little-endian PCM (no WAV headers)
   const outputPath = path.join(outputDir, "telephony.pcm");
-  await runFfmpeg([
-    "-y",
-    "-i",
-    inputPath,
-    "-c:a",
-    "pcm_s16le",
-    "-ar",
-    "16000",
-    "-ac",
-    "1",
-    "-f",
-    "s16le",
+  await ffmpegRunner([
+    "-y", "-i", inputPath,
+    "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1", "-f", "s16le",
     outputPath,
   ]);
   return readFileSync(outputPath);
 }
+
+// --- Provider ---
 
 export function buildCliSpeechProvider(): SpeechProviderPlugin {
   return {
@@ -278,20 +352,29 @@ export function buildCliSpeechProvider(): SpeechProviderPlugin {
     autoSelectOrder: 1000,
 
     resolveConfig(ctx): SpeechProviderConfig {
-      return resolveCliProviderConfig(ctx.rawConfig);
+      return resolveCliProviderConfig(ctx.rawConfig, ctx.cfg);
     },
 
     isConfigured(ctx): boolean {
-      return getConfig(ctx.providerConfig) !== null;
+      const resolved = ctx.providerConfig && Object.keys(ctx.providerConfig).length > 0
+        ? ctx.providerConfig
+        : resolvePluginEntryConfig(ctx.cfg);
+      return getConfig(resolved ?? {}) !== null;
     },
 
-    async synthesize(req: SpeechSynthesisRequest) {
-      const config = getConfig(req.providerConfig);
+    async synthesize(req) {
+      await resolveSDK();
+      let providerConfig = req.providerConfig;
+      if (!providerConfig || Object.keys(providerConfig).length === 0) {
+        providerConfig = resolvePluginEntryConfig(req.cfg);
+        log.debug("synthesize: using plugin entry config fallback");
+      }
+      const config = getConfig(providerConfig ?? {});
       if (!config) throw new Error("CLI TTS not configured");
 
-      log.debug(`synthesize: text=${req.text.slice(0, 50)}...`);
+      log.debug(`synthesize: text="${req.text.slice(0, 50)}…", format=${config.outputFormat}`);
 
-      const tempDir = mkdtempSync(path.join(resolvePreferredOpenClawTmpDir(), "openclaw-cli-tts-"));
+      const tempDir = mkdtempSync(path.join(getTmpDir(), "openclaw-cli-tts-"));
 
       try {
         const result = await runCli({
@@ -350,13 +433,18 @@ export function buildCliSpeechProvider(): SpeechProviderPlugin {
       }
     },
 
-    async synthesizeTelephony(req: SpeechTelephonySynthesisRequest) {
-      const config = getConfig(req.providerConfig);
+    async synthesizeTelephony(req) {
+      let providerConfig = req.providerConfig;
+      if (!providerConfig || Object.keys(providerConfig).length === 0) {
+        providerConfig = resolvePluginEntryConfig(req.cfg);
+      }
+      const config = getConfig(providerConfig ?? {});
       if (!config) throw new Error("CLI TTS not configured");
 
       log.debug(`synthesizeTelephony: text=${req.text.slice(0, 50)}...`);
 
-      const tempDir = mkdtempSync(path.join(resolvePreferredOpenClawTmpDir(), "openclaw-cli-tts-"));
+      await resolveSDK();
+      const tempDir = mkdtempSync(path.join(getTmpDir(), "openclaw-cli-tts-"));
 
       try {
         const result = await runCli({
@@ -375,7 +463,6 @@ export function buildCliSpeechProvider(): SpeechProviderPlugin {
           result.audioPath ?? path.join(tempDir, `input${getFileExt(result.actualFormat)}`);
         if (!result.audioPath) writeFileSync(inputFile, result.buffer);
 
-        // Convert to raw 16kHz mono PCM for telephony (no WAV headers)
         const pcmBuffer = await convertToRawPcm(inputFile, tempDir);
 
         return {

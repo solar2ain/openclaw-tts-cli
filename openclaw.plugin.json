@@ -5,7 +5,14 @@
   },
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
-    "properties": {}
+    "additionalProperties": true,
+    "properties": {
+      "command": { "type": "string", "description": "TTS CLI command (may include arguments)" },
+      "args": { "type": "array", "items": { "type": "string" }, "description": "Command arguments with template placeholders" },
+      "outputFormat": { "type": "string", "description": "Output audio format: mp3, opus, or wav" },
+      "timeoutMs": { "type": "number", "description": "Command timeout in milliseconds" },
+      "cwd": { "type": "string", "description": "Working directory for the CLI command" },
+      "env": { "type": "object", "description": "Extra environment variables" }
+    }
   }
 }
