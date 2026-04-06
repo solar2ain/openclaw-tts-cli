@@ -155,16 +155,23 @@ function stripEmojis(text: string): string {
 }
 
 function applyTemplate(str: string, ctx: Record<string, string | undefined>): string {
+  const lookup = (key: string): string => {
+    // Try exact match first
+    if (ctx[key] !== undefined) return ctx[key]!;
+    // Try PascalCase: outputDir -> OutputDir
+    const pascal = key.charAt(0).toUpperCase() + key.slice(1);
+    if (ctx[pascal] !== undefined) return ctx[pascal]!;
+    // Try all-lowercase match
+    const lower = key.toLowerCase();
+    for (const [k, v] of Object.entries(ctx)) {
+      if (k.toLowerCase() === lower && v !== undefined) return v;
+    }
+    return "";
+  };
   // Support both {{Text}} (double-brace) and {text} (single-brace) placeholders
   return str
-    .replace(/{{\s*(\w+)\s*}}/gi, (_match, key) => {
-      const normalizedKey = key.charAt(0).toUpperCase() + key.slice(1).toLowerCase();
-      return ctx[normalizedKey] ?? ctx[key] ?? "";
-    })
-    .replace(/(?<!\{)\{(\w+)\}(?!\})/gi, (_match, key) => {
-      const normalizedKey = key.charAt(0).toUpperCase() + key.slice(1).toLowerCase();
-      return ctx[normalizedKey] ?? ctx[key] ?? "";
-    });
+    .replace(/{{\s*(\w+)\s*}}/gi, (_match, key) => lookup(key))
+    .replace(/(?<!\{)\{(\w+)\}(?!\})/gi, (_match, key) => lookup(key));
 }
 
 function parseCommand(cmdStr: string): { cmd: string; initialArgs: string[] } {
@@ -247,7 +254,7 @@ async function runCli(params: {
     OutputPath: path.join(params.outputDir, `${params.filePrefix}${outputExt}`),
     OutputDir: params.outputDir,
     OutputBase: params.filePrefix,
-    Fileprefix: params.filePrefix,
+    FilePrefix: params.filePrefix,
   };
 
   const { cmd, initialArgs } = parseCommand(params.command);
@@ -255,6 +262,8 @@ async function runCli(params: {
 
   const baseArgs = [...initialArgs, ...params.args];
   const args = baseArgs.map((a) => applyTemplate(a, ctx));
+
+  log.debug(`runCli: ${cmd} ${args.join(" ")}`);
 
   return new Promise((resolve, reject) => {
     let timedOut = false;
@@ -389,7 +398,7 @@ export function buildCliSpeechProvider(): SpeechProviderPlugin {
           outputFormat: config.outputFormat,
         });
 
-        log.debug(`synthesize: format=${result.actualFormat}, size=${result.buffer.length}`);
+        log.debug(`synthesize: format=${result.actualFormat}, size=${result.buffer.length}${result.audioPath ? `, path=${result.audioPath}` : ", from stdout"}`);
 
         let buffer: Buffer;
         let format: OutputFormat;
