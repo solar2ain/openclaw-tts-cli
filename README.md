@@ -47,7 +47,7 @@ through the plugin entry instead:
 {
   "plugins": {
     "entries": {
-      "openclaw-tts-cli": {
+      "tts-local-cli": {
         "enabled": true,
         "config": {
           "command": "/usr/local/bin/your-tts-tool",
@@ -146,7 +146,7 @@ Plugin config style (compatible with all versions):
 {
   "plugins": {
     "entries": {
-      "openclaw-tts-cli": {
+      "tts-local-cli": {
         "enabled": true,
         "config": {
           "command": "python3 -m mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16 --voice serena --lang_code zh --audio_format wav",

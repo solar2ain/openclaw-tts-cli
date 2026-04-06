@@ -1,7 +1,7 @@
 {
-  "id": "openclaw-tts-cli",
+  "id": "tts-local-cli",
   "contracts": {
-    "speechProviders": ["openclaw-tts-cli", "cli"]
+    "speechProviders": ["tts-local-cli", "cli"]
   },
   "configSchema": {
     "type": "object",
