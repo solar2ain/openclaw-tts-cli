@@ -11,9 +11,9 @@ const execFileAsync = promisify(execFile);
 type LogFn = (msg: string, ...args: unknown[]) => void;
 
 const log: { debug: LogFn; warn: LogFn; error: LogFn } = {
-  debug: (...args) => console.log("[tts-local-cli]", ...args),
-  warn: (...args) => console.warn("[tts-local-cli]", ...args),
-  error: (...args) => console.error("[tts-local-cli]", ...args),
+  debug: (...args) => console.log("[openclaw-tts-cli]", ...args),
+  warn: (...args) => console.warn("[openclaw-tts-cli]", ...args),
+  error: (...args) => console.error("[openclaw-tts-cli]", ...args),
 };
 
 let _sdkResolved = false;
@@ -25,7 +25,7 @@ async function resolveSDK(): Promise<void> {
   _sdkResolved = true;
   try {
     const { createSubsystemLogger } = await import("openclaw/plugin-sdk/runtime-env");
-    const sdkLog = createSubsystemLogger("tts-local-cli");
+    const sdkLog = createSubsystemLogger("openclaw-tts-cli");
     log.debug = sdkLog.debug;
     log.warn = sdkLog.warn;
     log.error = sdkLog.error;
@@ -117,7 +117,7 @@ function resolvePluginEntryConfig(
 ): SpeechProviderConfig | undefined {
   const plugins = asObject(cfg?.plugins);
   const entries = asObject(plugins?.entries);
-  const entry = asObject(entries?.["tts-local-cli"]);
+  const entry = asObject(entries?.["openclaw-tts-cli"]);
   return asObject(entry?.config) ?? undefined;
 }
 
@@ -126,9 +126,9 @@ function resolveCliProviderConfig(
   cfg?: Record<string, unknown>,
 ): SpeechProviderConfig {
   const providers = asObject(rawConfig.providers);
-  const fromProviders = asObject(providers?.cli) ?? asObject(providers?.["tts-local-cli"]);
+  const fromProviders = asObject(providers?.cli) ?? asObject(providers?.["openclaw-tts-cli"]);
   if (fromProviders) return fromProviders;
-  // Fallback: plugin config (plugins.entries.tts-local-cli.config)
+  // Fallback: plugin config (plugins.entries.openclaw-tts-cli.config)
   return resolvePluginEntryConfig(cfg) ?? {};
 }
 
@@ -346,7 +346,7 @@ async function convertToRawPcm(inputPath: string, outputDir: string): Promise<Bu
 
 export function buildCliSpeechProvider(): SpeechProviderPlugin {
   return {
-    id: "tts-local-cli",
+    id: "openclaw-tts-cli",
     aliases: ["cli"],
     label: "Local CLI",
     autoSelectOrder: 1000,
